@@ -7,6 +7,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 import re
 import sys
+import json
+from pathlib import Path
 
 def is_dark_mode():
     """Detect if system is in dark mode (Windows only)"""
@@ -354,8 +356,16 @@ class TDScannerGUI:
             }
         }
 
-        # Auto-detect system theme
-        if is_dark_mode():
+        # Settings file path
+        self.config_file = Path.home() / ".tdscanner_config.json"
+
+        # Load settings or use defaults
+        settings = self.load_settings()
+
+        # Auto-detect system theme if not saved
+        if settings.get("theme"):
+            self.current_theme = settings["theme"]
+        elif is_dark_mode():
             self.current_theme = "Dark Modern"
         else:
             self.current_theme = "Clean Studio"
@@ -363,10 +373,53 @@ class TDScannerGUI:
         self.target_entries = []  # List to store target entry widgets
         self.scan_cancelled = False
         self.executor = None
-        self.case_sensitive_var = tk.BooleanVar(value=False)
-        self.use_regex_var = tk.BooleanVar(value=False)
+        self.last_directory = settings.get("last_directory", r"D:\DreamSVN\Dream_Doc\1.ProgramSpec\X.Version\3.0")
+        self.saved_targets = settings.get("targets", ["orgEmpCertDetail"])
+        self.case_sensitive_var = tk.BooleanVar(value=settings.get("case_sensitive", False))
+        self.use_regex_var = tk.BooleanVar(value=settings.get("use_regex", False))
         self.apply_theme()
         self.create_widgets()
+
+        # Save settings on window close
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def on_closing(self):
+        """Handle window close event"""
+        self.save_settings()
+        self.root.destroy()
+
+    def load_settings(self):
+        """Load settings from config file"""
+        try:
+            if self.config_file.exists():
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"Failed to load settings: {e}")
+        return {}
+
+    def save_settings(self):
+        """Save current settings to config file"""
+        try:
+            # Collect current targets
+            targets = []
+            for entry in self.target_entries:
+                target = entry.get().strip()
+                if target:
+                    targets.append(target)
+
+            settings = {
+                "theme": self.current_theme,
+                "last_directory": self.dir_entry.get().strip(),
+                "targets": targets,
+                "case_sensitive": self.case_sensitive_var.get(),
+                "use_regex": self.use_regex_var.get()
+            }
+
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"Failed to save settings: {e}")
 
     def apply_theme(self):
         theme = self.themes[self.current_theme]
@@ -398,6 +451,7 @@ class TDScannerGUI:
         self.current_theme = self.theme_selector.get()
         self.apply_theme()
         self.refresh_ui()
+        self.save_settings()
 
     def refresh_ui(self):
         # Update all widget colors
@@ -455,6 +509,12 @@ class TDScannerGUI:
         self.results_label.config(text=self.label_results, bg=self.bg_main,
                                  fg=self.text_color, font=self.font_main)
         self.results_text.config(bg=self.result_bg, fg=self.result_fg)
+
+        self.export_frame.config(bg=self.bg_main)
+        self.export_txt_btn.config(font=self.font_main, bg=self.accent,
+                                  fg=self.btn_fg, relief=self.relief_style)
+        self.export_csv_btn.config(font=self.font_main, bg=self.accent,
+                                  fg=self.btn_fg, relief=self.relief_style)
 
         self.status_bar.config(text=self.status_ready, bg=self.bg_secondary,
                               fg=self.text_color, font=self.font_main)
@@ -542,8 +602,9 @@ class TDScannerGUI:
         # Bind mousewheel for scrolling
         self.targets_canvas.bind_all("<MouseWheel>", self.on_mousewheel)
 
-        # Add first target field
-        self.add_target_field("orgEmpCertDetail")
+        # Add saved target fields
+        for target in self.saved_targets:
+            self.add_target_field(target)
 
         # Directory Selection
         self.dir_frame = tk.Frame(self.controls, bg=self.bg_tertiary)
@@ -556,7 +617,7 @@ class TDScannerGUI:
 
         self.dir_entry = tk.Entry(self.dir_frame, width=40, font=self.font_main,
                                   bg=self.entry_bg, fg=self.entry_fg, bd=3)
-        self.dir_entry.insert(0, r"D:\DreamSVN\Dream_Doc\1.ProgramSpec\X.Version\3.0")
+        self.dir_entry.insert(0, self.last_directory)
         self.dir_entry.pack(side="left", padx=5)
 
         self.browse_btn = tk.Button(self.dir_frame, text=self.btn_browse,
@@ -626,6 +687,28 @@ class TDScannerGUI:
                                                      bg=self.result_bg, fg=self.result_fg,
                                                      bd=3, relief="sunken")
         self.results_text.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Export buttons
+        self.export_frame = tk.Frame(self.results_frame, bg=self.bg_main)
+        self.export_frame.pack(pady=5)
+
+        self.export_txt_btn = tk.Button(self.export_frame, text="Export as TXT",
+                                        command=self.export_txt,
+                                        font=self.font_main, bg=self.accent,
+                                        fg=self.btn_fg, bd=3, relief=self.relief_style,
+                                        cursor="hand2", state="disabled")
+        self.export_txt_btn.pack(side="left", padx=5)
+
+        self.export_csv_btn = tk.Button(self.export_frame, text="Export as CSV",
+                                        command=self.export_csv,
+                                        font=self.font_main, bg=self.accent,
+                                        fg=self.btn_fg, bd=3, relief=self.relief_style,
+                                        cursor="hand2", state="disabled")
+        self.export_csv_btn.pack(side="left", padx=5)
+
+        # Store results for export
+        self.last_results = []
+        self.last_file_count = 0
 
         # Status Bar
         self.status_bar = tk.Label(self.root, text=self.status_ready,
@@ -831,6 +914,18 @@ class TDScannerGUI:
     def display_results(self, results, file_count):
         self.results_text.delete(1.0, tk.END)
 
+        # Store results for export
+        self.last_results = results
+        self.last_file_count = file_count
+
+        # Enable export buttons if there are results
+        if results:
+            self.export_txt_btn.config(state="normal")
+            self.export_csv_btn.config(state="normal")
+        else:
+            self.export_txt_btn.config(state="disabled")
+            self.export_csv_btn.config(state="disabled")
+
         # Count total matches per target
         target_counts = {}
         for r in results:
@@ -871,6 +966,83 @@ class TDScannerGUI:
         if bg is None:
             bg = self.bg_secondary
         self.root.after(0, lambda: self.status_bar.config(text=text, bg=bg))
+
+    def export_txt(self):
+        """Export results to TXT file"""
+        if not self.last_results:
+            messagebox.showinfo("Info", "No results to export")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            initialfile="scan_results.txt"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                # Write header
+                f.write("="*60 + "\n")
+                f.write("TD SCANNER - SCAN RESULTS\n")
+                f.write("="*60 + "\n\n")
+                f.write(f"Files scanned: {self.last_file_count}\n")
+                f.write(f"Files with matches: {len(self.last_results)}\n\n")
+
+                # Count matches by target
+                target_counts = {}
+                for r in self.last_results:
+                    for target in r['found']:
+                        target_counts[target] = target_counts.get(target, 0) + 1
+
+                if target_counts:
+                    f.write("Matches by target:\n")
+                    for target, count in sorted(target_counts.items()):
+                        f.write(f"  • {target}: {count} file(s)\n")
+
+                f.write("\n" + "="*60 + "\n\n")
+
+                # Write detailed results
+                for i, r in enumerate(self.last_results, 1):
+                    f.write(f"#{i} {r['file']}\n")
+                    f.write(f"   Found: {', '.join(sorted(r['found']))}\n\n")
+
+            messagebox.showinfo("Success", f"Results exported to:\n{file_path}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export:\n{str(e)}")
+
+    def export_csv(self):
+        """Export results to CSV file"""
+        if not self.last_results:
+            messagebox.showinfo("Info", "No results to export")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            initialfile="scan_results.csv"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            import csv
+            with open(file_path, 'w', encoding='utf-8-sig', newline='') as f:
+                writer = csv.writer(f)
+                # Write header
+                writer.writerow(["#", "File Path", "Found Targets", "Target Count"])
+
+                # Write data
+                for i, r in enumerate(self.last_results, 1):
+                    targets_str = ", ".join(sorted(r['found']))
+                    writer.writerow([i, r['file'], targets_str, len(r['found'])])
+
+            messagebox.showinfo("Success", f"Results exported to:\n{file_path}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to export:\n{str(e)}")
 
 if __name__ == "__main__":
     # Required for multiprocessing on Windows
